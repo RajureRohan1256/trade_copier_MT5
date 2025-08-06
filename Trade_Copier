@@ -1,0 +1,111 @@
+//+------------------------------------------------------------------+
+//|               TradeCopier.mq5                                    |
+//|               Copyright (c) 2025 RMR                             |
+//|               LICENSE: MIT License                               |
+//|                                                                  |
+//| Permission is hereby granted, free of charge, to any person      |
+//| obtaining a copy of this software and associated documentation   |
+//| files (the "Software"), to deal in the Software without          |
+//| restriction, including without limitation the rights to use,     |
+//| copy, modify, merge, publish, distribute, sublicense, and/or     |
+//| sell copies of the Software, and to permit persons to whom the   |
+//| Software is furnished to do so, subject to the following         |
+//| conditions:                                                      |
+//|                                                                  |
+//| The above copyright notice and this permission notice shall be   |
+//| included in all copies or substantial portions of the Software.  |
+//|                                                                  |
+//+------------------------------------------------------------------+
+//| Description:                                                     |
+//| This Expert Advisor is a Slave component of a file-based         |
+//| trade copier system for MetaTrader 5. It reads trade signals     |
+//| from a binary (.bin) file written by a Master EA, and copies     |
+//| the trade to the current MT5 terminal. It supports trade         |
+//| direction (Buy/Sell), Stop Loss, and Take Profit copying.        |
+//|                                                                  |
+//| Use case: Synchronizing trades from a master bot (like on demo)  |
+//| to another terminal (like on real account or different broker).  |
+//+------------------------------------------------------------------+
+//
+// Prerequisites:
+// 1. Master EA must write binary signals in format:
+//    [uchar direction][double SL][double TP][ulong timestamp]
+// 2. Place the .bin file in a shared location (e.g., Common Files).
+// 3. Set correct path in `MasterFileName` input in this EA.
+// 4. Ensure both MT5 terminals run with read/write permission.
+// 5. Use same symbol (or appropriate mapping) in both terminals.
+// 6. Attach this EA to chart of the symbol to be traded (e.g., XAUUSD).
+
+
+#include <Trade/Trade.mqh>
+#include <Files\FileBin.mqh>
+
+input string MasterFileName = "Master.bin"; // Path to the .bin file written by the Master EA
+input double LotSize = 0.1;
+
+int handle = INVALID_HANDLE;
+ulong lastTradeTime = 0;
+bool tradeOpened = false;
+CTrade trade;
+
+struct TradeSignal {
+   uchar direction;   // 0 = Buy, 1 = Sell
+   double sl;
+   double tp;
+   ulong timestamp;
+};
+
+TradeSignal currentSignal;
+
+int OnInit() {
+   handle = FileOpen(MasterFileName, FILE_BIN | FILE_READ | FILE_SHARE_READ, '\0');
+   if (handle == INVALID_HANDLE) {
+      Print("Failed to open master file: ", MasterFileName);
+      return INIT_FAILED;
+   }
+   FileClose(handle);
+   return INIT_SUCCEEDED;
+}
+
+void OnTick() {
+   // Reopen on every tick to get latest data
+   handle = FileOpen(MasterFileName, FILE_BIN | FILE_READ | FILE_SHARE_READ, '\0');
+   if (handle == INVALID_HANDLE) {
+      Print("Error opening file: ", MasterFileName);
+      return;
+   }
+
+   // Read signal data
+   while (!FileIsEnding(handle)) {
+      currentSignal.direction = FileReadChar(handle);
+      currentSignal.sl = FileReadDouble(handle);
+      currentSignal.tp = FileReadDouble(handle);
+      currentSignal.timestamp = FileReadLong(handle);
+   }
+
+   FileClose(handle);
+
+   // If new trade signal
+   if (currentSignal.timestamp > lastTradeTime) {
+      CloseOpenTrades();
+
+      if (currentSignal.direction == 0) {
+         trade.Buy(LotSize, _Symbol, 0, currentSignal.sl, currentSignal.tp);
+         Print("Copied BUY from master. SL=", currentSignal.sl, ", TP=", currentSignal.tp);
+      } else if (currentSignal.direction == 1) {
+         trade.Sell(LotSize, _Symbol, 0, currentSignal.sl, currentSignal.tp);
+         Print("Copied SELL from master. SL=", currentSignal.sl, ", TP=", currentSignal.tp);
+      }
+
+      lastTradeTime = currentSignal.timestamp;
+   }
+}
+
+void CloseOpenTrades() {
+   for (int i = PositionsTotal() - 1; i >= 0; i--) {
+      if (PositionGetSymbol(i) == _Symbol) {
+         ulong ticket = PositionGetTicket(i);
+         trade.PositionClose(ticket);
+      }
+   }
+}
